@@ -1,5 +1,5 @@
-// ANTIGRAVITY AUTOMATOR V15.0 — ALWAYS-ALLOW AUTO-CLICK + STUCK RECOVERY
-console.log("🚀 Antigravity Automator V15.0 (Always-Allow Auto-Click) Active");
+// ANTIGRAVITY AUTOMATOR V15.1 — ACCEPT-ALL CLEARER + ALWAYS-ALLOW + STUCK RECOVERY
+console.log("🚀 Antigravity Automator V15.1 (Accept-All Clearer) Active");
 
 // 1. CLEANUP
 if (window.agAutomator) clearInterval(window.agAutomator);
@@ -8,6 +8,7 @@ if (window.agObserver2) { window.agObserver2.disconnect(); window.agObserver2 = 
 if (window.agScanner) { window.agScanner.disconnect(); window.agScanner = null; }
 if (window.agHeartbeat) { clearInterval(window.agHeartbeat); window.agHeartbeat = null; }
 if (window.agStuckChecker) { clearInterval(window.agStuckChecker); window.agStuckChecker = null; }
+if (window.agAcceptAllScanner) { clearInterval(window.agAcceptAllScanner); window.agAcceptAllScanner = null; }
 
 // ====== STATE ======
 let isStreaming = false;
@@ -24,6 +25,7 @@ const STUCK_CHECK_INTERVAL = 2000;
 const HEARTBEAT_INTERVAL = 3000;
 const STUCK_COOLDOWN_MS = 5000;
 const ALWAYS_ALLOW_SCAN_MS = 1500;  // V15: scan for Always Allow every 1.5s
+const ACCEPT_ALL_SCAN_MS = 1000;    // V15.1: scan for Accept All notifications every 1s
 
 // 2. Recursive Shadow DOM Selector
 function querySelectorAllShadows(selector, root) {
@@ -325,6 +327,44 @@ function clickAlwaysAllowInDocument(doc) {
 }
 
 // ========================================================
+// 13B. V15.1 — ACCEPT ALL NOTIFICATION CLEARER
+//   These are file-change notification bars ("1 File With Changes... Accept all")
+//   that stack between chat and input box, blocking scroll.
+//   This scanner BYPASSES isInExcludedZone to ensure they always get clicked.
+// ========================================================
+function clearAcceptAllNotifications(doc) {
+    const docsToScan = [doc];
+    const iframeDoc = getCascadeIframe();
+    if (iframeDoc && iframeDoc !== doc) docsToScan.push(iframeDoc);
+
+    let cleared = 0;
+    for (const d of docsToScan) {
+        const buttons = d.querySelectorAll('button');
+        for (const btn of buttons) {
+            const text = (btn.textContent || '').trim();
+            // Match "Accept all" / "Accept All" — the file-change notification button
+            if (/^Accept\s+all$/i.test(text)) {
+                if (btn.dataset.agAcceptAllClicked) continue;
+                btn.dataset.agAcceptAllClicked = "true";
+                console.log(`🗑️ Accept All notification cleared: [${text}]`);
+                btn.style.border = "4px solid cyan";
+                try { btn.focus(); } catch (e) { }
+                btn.click();
+                // Backup: keyboard trigger
+                setTimeout(() => {
+                    const options = { bubbles: true, cancelable: true, view: window };
+                    const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ...options };
+                    btn.dispatchEvent(new KeyboardEvent('keydown', enter));
+                    btn.dispatchEvent(new KeyboardEvent('keyup', enter));
+                }, 50);
+                cleared++;
+            }
+        }
+    }
+    return cleared;
+}
+
+// ========================================================
 // 13. STUCK-SCROLL DETECTION — "Step Requires Input"
 // ========================================================
 function checkForStuckState(doc) {
@@ -379,6 +419,9 @@ function checkForStuckState(doc) {
 // 14. HEARTBEAT SCANNER — safety net for missed events
 // ========================================================
 function heartbeatScan(doc) {
+    // 0. V15.1: Always clear Accept All notifications first
+    clearAcceptAllNotifications(doc);
+
     // 1. Check for stuck state (includes Always Allow clicking)
     checkForStuckState(doc);
 
@@ -399,6 +442,7 @@ function heartbeatScan(doc) {
 // 15. MAIN HANDLER (mutation-driven)
 function handleMutations(doc) {
     onMutationActivity();
+    clearAcceptAllNotifications(doc);  // V15.1: clear stacked notifications BEFORE scrolling
     autoScroll(doc);
     scanForButtons(doc);
 }
@@ -492,14 +536,21 @@ window.agAlwaysAllowScanner = setInterval(() => {
     }
 }, ALWAYS_ALLOW_SCAN_MS);
 
+// 16E. V15.1: DEDICATED ACCEPT ALL SCANNER
+// Runs independently to catch file-change notification "Accept all" buttons
+window.agAcceptAllScanner = setInterval(() => {
+    clearAcceptAllNotifications(document);
+}, ACCEPT_ALL_SCAN_MS);
+
 // ========================================================
 // 17. STARTUP SUMMARY
 // ========================================================
-console.log("✅ V15.0 Active. Always-Allow auto-click + stuck recovery.");
+console.log("✅ V15.1 Active. Accept-All clearer + Always-Allow auto-click + stuck recovery.");
 console.log("📋 Summary:");
-console.log("   • 🆕 Auto-clicks 'Always Allow' button in cascade-panel iframe");
-console.log("   • 🆕 Dedicated Always-Allow scanner every 1.5s");
-console.log("   • 🆕 Removed accidental block on 'always*' buttons from V14");
+console.log("   • 🆕 V15.1: Auto-clicks 'Accept all' file-change notifications (bypasses exclusion zones)");
+console.log("   • 🆕 V15.1: Dedicated Accept All scanner every 1s");
+console.log("   • Auto-clicks 'Always Allow' button in cascade-panel iframe");
+console.log("   • Dedicated Always-Allow scanner every 1.5s");
 console.log("   • Auto-scroll targets #conversation container (normal mode)");
 console.log("   • Detects 'Step Requires Input' stuck state every 3s");
 console.log("   • Force-scrolls ALL scrollable containers when stuck");
