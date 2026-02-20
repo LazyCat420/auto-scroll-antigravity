@@ -1,5 +1,5 @@
-// ANTIGRAVITY AUTOMATOR V17.0 — OMNI-CLICKER + STUCK RECOVERY
-console.log("🚀 Antigravity Automator V17.0 (Omni-Clicker) Active");
+// ANTIGRAVITY AUTOMATOR V17.3 — SCROLL-FIRST + RIGHT-BUTTON ONLY + USER SCROLL RESPECT
+console.log("🚀 Antigravity Automator V17.3 (User-Scroll Aware) Active");
 
 // 1. CLEANUP
 if (window.agAutomator) clearInterval(window.agAutomator);
@@ -9,8 +9,6 @@ if (window.agScanner) { window.agScanner.disconnect(); window.agScanner = null; 
 if (window.agHeartbeat) { clearInterval(window.agHeartbeat); window.agHeartbeat = null; }
 if (window.agStuckChecker) { clearInterval(window.agStuckChecker); window.agStuckChecker = null; }
 if (window.agPrimaryScanner) { clearInterval(window.agPrimaryScanner); window.agPrimaryScanner = null; }
-if (window.agAcceptAllScanner) { clearInterval(window.agAcceptAllScanner); window.agAcceptAllScanner = null; }
-if (window.agAlwaysAllowScanner) { clearInterval(window.agAlwaysAllowScanner); window.agAlwaysAllowScanner = null; }
 
 // ====== STATE ======
 let isStreaming = false;
@@ -19,13 +17,17 @@ let streamingTimeout = null;
 let userScrolledUp = false;
 let stuckDetected = false;
 let lastStuckTime = 0;
+let debugScanCount = 0;
 const STREAMING_THRESHOLD = 3;
 const IDLE_DELAY = 2000;
 const HEARTBEAT_INTERVAL = 3000;
 const STUCK_COOLDOWN_MS = 5000;
-const ACTION_BUTTON_SCAN_MS = 1000;
+const ACTION_BUTTON_SCAN_MS = 800;
+const DEBUG_LOG_EVERY_N = 10;
 
-// 2. Recursive Shadow DOM Selector
+// ========================================================
+// 2. UTILITIES
+// ========================================================
 function querySelectorAllShadows(selector, root) {
     if (!root) return [];
     const results = [...root.querySelectorAll(selector)];
@@ -37,7 +39,6 @@ function querySelectorAllShadows(selector, root) {
     return results;
 }
 
-// 3. Iframe Finder
 function getCascadeIframe() {
     const iframes = document.querySelectorAll('iframe');
     for (const iframe of iframes) {
@@ -58,11 +59,12 @@ function getCascadeIframe() {
     return null;
 }
 
-// 4. Find ALL scrollable containers in a document
+// ========================================================
+// 3. SCROLLING LOGIC
+// ========================================================
 function findAllScrollableContainers(doc) {
     const containers = [];
-    const allDivs = doc.querySelectorAll('div');
-    allDivs.forEach(el => {
+    doc.querySelectorAll('div').forEach(el => {
         if (el.scrollHeight > el.clientHeight && el.clientHeight > 50) {
             const style = window.getComputedStyle(el);
             const ov = style.overflowY;
@@ -74,47 +76,35 @@ function findAllScrollableContainers(doc) {
     return containers;
 }
 
-// 5. Force-scroll ALL scrollable containers to the bottom
+// Returns true if ALL scrollable containers are at the bottom
+function isFullyScrolledToBottom(doc) {
+    const containers = findAllScrollableContainers(doc);
+    if (containers.length === 0) return true;
+    for (const el of containers) {
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        if (distFromBottom > 15) return false;
+    }
+    return true;
+}
+
 function forceScrollAllContainers(doc) {
     const containers = findAllScrollableContainers(doc);
-    if (containers.length === 0) return;
-
-    // console.log(`🔄 Force-scrolling ${containers.length} scrollable containers`);
-    containers.forEach((el, i) => {
+    let scrolled = 0;
+    containers.forEach(el => {
         const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
         if (distFromBottom > 5) {
             el.scrollTop = el.scrollHeight;
+            scrolled++;
         }
     });
+    return scrolled;
 }
 
-// 6. PRECISION Auto-Scroll
 function isPopupOpen(doc) {
-    const typeahead = doc.querySelector('#typeahead-menu, .lexical-typeahead-menu');
-    if (typeahead) return true;
-    const menu = doc.querySelector('.menubar-menu-items-holder, .monaco-menu-container');
-    if (menu) return true;
-    const popup = doc.querySelector('[role="listbox"], [role="menu"], .suggest-widget, .quick-input-widget');
-    if (popup) return true;
+    if (doc.querySelector('#typeahead-menu, .lexical-typeahead-menu')) return true;
+    if (doc.querySelector('.menubar-menu-items-holder, .monaco-menu-container')) return true;
+    if (doc.querySelector('[role="listbox"], [role="menu"], .suggest-widget, .quick-input-widget')) return true;
     return false;
-}
-
-function autoScroll(doc) {
-    if (!isStreaming) return;
-    if (userScrolledUp) return;
-    if (isPopupOpen(doc)) return;
-
-    const convo = doc.getElementById('conversation');
-    if (!convo) {
-        const chat = doc.getElementById('chat');
-        if (chat) scrollDeepestContainer(chat);
-        return;
-    }
-
-    let scrollTarget = findScrollableParent(convo);
-    if (scrollTarget) {
-        scrollTarget.scrollTop = scrollTarget.scrollHeight;
-    }
 }
 
 function findScrollableParent(el) {
@@ -123,9 +113,7 @@ function findScrollableParent(el) {
         if (node.scrollHeight > node.clientHeight && node.clientHeight > 50) {
             const style = window.getComputedStyle(node);
             const ov = style.overflowY;
-            if (ov === 'scroll' || ov === 'auto') {
-                return node;
-            }
+            if (ov === 'scroll' || ov === 'auto') return node;
         }
         node = node.parentElement;
     }
@@ -149,25 +137,40 @@ function scrollDeepestContainer(root) {
     if (best) best.scrollTop = best.scrollHeight;
 }
 
-// 7. User scroll detection
+function autoScroll(doc) {
+    if (!isStreaming) return;
+    if (userScrolledUp) return;
+    if (isPopupOpen(doc)) return;
+
+    const convo = doc.getElementById('conversation');
+    if (!convo) {
+        const chat = doc.getElementById('chat');
+        if (chat) scrollDeepestContainer(chat);
+        return;
+    }
+    let scrollTarget = findScrollableParent(convo);
+    if (scrollTarget) scrollTarget.scrollTop = scrollTarget.scrollHeight;
+}
+
+// ========================================================
+// 4. USER SCROLL DETECTION
+// ========================================================
 function setupScrollDetection(doc) {
     doc.addEventListener('wheel', (e) => {
         if (e.deltaY < 0) {
             if (!userScrolledUp) {
                 userScrolledUp = true;
-                console.log("⏸️ User scrolled up — auto-scroll paused until streaming restarts");
+                console.log("⏸️ User scrolled up — auto-scroll paused");
             }
         } else if (e.deltaY > 0) {
             const convo = doc.getElementById('conversation');
             if (convo) {
                 const scrollParent = findScrollableParent(convo);
                 if (scrollParent) {
-                    const distFromBottom = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight;
-                    if (distFromBottom < 100) {
-                        if (userScrolledUp) {
-                            userScrolledUp = false;
-                            console.log("▶️ User scrolled to bottom — auto-scroll resumed");
-                        }
+                    const dist = scrollParent.scrollHeight - scrollParent.scrollTop - scrollParent.clientHeight;
+                    if (dist < 100 && userScrolledUp) {
+                        userScrolledUp = false;
+                        console.log("▶️ User scrolled to bottom — auto-scroll resumed");
                     }
                 }
             }
@@ -175,7 +178,9 @@ function setupScrollDetection(doc) {
     }, { passive: true });
 }
 
-// 8. Streaming activity tracker
+// ========================================================
+// 5. STREAMING ACTIVITY TRACKER
+// ========================================================
 function onMutationActivity() {
     mutationBurst++;
     if (mutationBurst >= STREAMING_THRESHOLD && !isStreaming) {
@@ -187,14 +192,62 @@ function onMutationActivity() {
         if (isStreaming) {
             console.log("⏹️ Streaming stopped — auto-scroll OFF");
             isStreaming = false;
-            userScrolledUp = false;
+            // NOTE: Do NOT reset userScrolledUp here!
+            // If the user scrolled up, that preference should persist until
+            // they manually scroll back to the bottom.
         }
         mutationBurst = 0;
     }, IDLE_DELAY);
 }
 
 // ========================================================
-// 9. V17 OMNI-CLICKER (Bypasses all exclusion zones!)
+// 6. V17.2 BUTTON CLASSIFIER
+//    RIGHT-SIDE PRIMARY BUTTONS ONLY!
+//    Layout is always:  [Always run ∨]  [Reject]  [Run Alt+⏎]
+//                       [Always run ∨]  [Deny]    [Allow A...]
+//    LEFT dropdown = NEVER click
+//    RIGHT primary = ALWAYS click
+// ========================================================
+
+// BLOCKLIST: these are left-side dropdowns or destructive buttons — NEVER click
+function isBlockedButton(text) {
+    if (text.includes('reject')) return true;
+    if (text.includes('deny')) return true;
+    if (text.includes('cancel')) return true;
+    if (text === 'alwaysrun') return true;         // LEFT-side dropdown toggle
+    if (text === 'alwaysallow') return true;        // LEFT-side dropdown toggle (if it appears)
+    if (text.startsWith('always')) return true;      // catch-all for ANY "Always ..." left-side toggle
+    if (text === 'review') return true;              // user's own review button
+    if (text === 'submit') return true;              // user's own submit button
+    return false;
+}
+
+// TARGETLIST: these are RIGHT-side primary action buttons — CLICK THESE
+function isRightSideAction(text) {
+    // Run buttons (the primary action)
+    if (text === 'run') return 'run';
+    if (text.includes('runalt')) return 'runalt';                    // "RunAlt+⏎"
+    if (text.includes('runinthisconversation')) return 'run-in-conv';
+
+    // Allow/permission buttons (RIGHT side of permission prompt)
+    if (text.startsWith('allow')) return 'allow';                   // "Allow", "Allow All", "Allow A..."
+
+    // Accept buttons
+    if (text === 'accept') return 'accept';
+    if (text === 'approve') return 'approve';
+    if (text.includes('acceptall')) return 'accept-all';            // file-change "Accept all"
+
+    // Proceed/plan buttons
+    if (text === 'proceed') return 'proceed';
+    if (text.includes('implementplan')) return 'implement-plan';
+
+    return null;
+}
+
+// ========================================================
+// 7. V17.3 OMNI-CLICKER — RESPECTS USER SCROLL
+//    ONLY force-scrolls when: streaming is active OR stuck state
+//    When idle + user scrolled up → just scan buttons, no scroll
 // ========================================================
 function scanForPrimaryActions() {
     const docsToScan = [document];
@@ -202,48 +255,73 @@ function scanForPrimaryActions() {
     if (iframeDoc && iframeDoc !== document) docsToScan.push(iframeDoc);
 
     let clicked = 0;
+    debugScanCount++;
+    const doDebug = (debugScanCount % DEBUG_LOG_EVERY_N === 0);
+
+    // Should we force-scroll? Only when streaming or stuck — never when user scrolled up while idle
+    const shouldForceScroll = (isStreaming || stuckDetected) && !userScrolledUp;
+
+    if (doDebug) {
+        console.log(`\n--- 🔎 V17.3 SCAN #${debugScanCount} | streaming:${isStreaming} | stuck:${stuckDetected} | userScrolledUp:${userScrolledUp} | forceScroll:${shouldForceScroll} ---`);
+    }
+
     for (const d of docsToScan) {
+        const docLabel = (d === document) ? 'MAIN' : 'IFRAME';
+
+        // STEP 1: SCROLL — but ONLY when streaming/stuck and user hasn't scrolled up
+        if (shouldForceScroll) {
+            const wasAtBottom = isFullyScrolledToBottom(d);
+            if (!wasAtBottom) {
+                const scrolled = forceScrollAllContainers(d);
+                if (doDebug) console.log(`[${docLabel}] ⬇️ Scrolled ${scrolled} containers to bottom`);
+            }
+        }
+
+        // STEP 2: ALWAYS scan for right-side action buttons (even without scrolling)
         const candidates = querySelectorAllShadows('button, .monaco-button, div[role="button"], a.monaco-button', d.body || d);
 
+        if (doDebug) console.log(`[${docLabel}] Scanning ${candidates.length} elements`);
+
         for (const btn of candidates) {
-            const rawText = btn.textContent || btn.innerText || '';
+            const rawText = (btn.textContent || btn.innerText || '').trim();
             const text = rawText.toLowerCase().replace(/\s+/g, '').trim();
 
             if (!text) continue;
 
-            // Explicitly ignore cancel/reject/deny
-            if (text.includes('reject') || text.includes('deny') || text.includes('cancel')) continue;
+            // Check blocklist FIRST
+            if (isBlockedButton(text)) {
+                if (doDebug && rawText.length < 40) console.log(`  🚫 BLOCKED: "${rawText}"`);
+                continue;
+            }
 
-            // Identify Target Buttons
-            let isTarget = false;
-            if (text.includes('runalt')) isTarget = true;
-            if (text.includes('acceptall')) isTarget = true;
-            if (text === 'alwaysallow') isTarget = true;
-            if (text === 'run') isTarget = true;
-            if (text === 'proceed') isTarget = true;
-            if (text === 'accept' || text === 'approve') isTarget = true;
-            if (text.includes('runinthisconversation')) isTarget = true;
-            if (text.includes('implementplan')) isTarget = true;
+            // Check if it's a right-side action button
+            const matchRule = isRightSideAction(text);
 
-            if (isTarget) {
-                // If it's disabled or hidden, skip
-                if (btn.disabled || btn.classList.contains('disabled') || btn.getAttribute('aria-disabled') === 'true') continue;
+            if (doDebug && rawText.length > 0 && rawText.length < 50) {
+                const status = matchRule ? `✅ MATCH [${matchRule}]` : '⬜ skip';
+                console.log(`  ${status}: "${rawText}"`);
+            }
 
+            if (matchRule) {
+                // Skip disabled/hidden buttons
+                if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
                 try {
                     const style = window.getComputedStyle(btn);
-                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+                    if (style.display === 'none' || style.visibility === 'hidden') continue;
+                    if (style.pointerEvents === 'none' || style.opacity === '0') continue;
                 } catch (e) { }
 
-                if (btn.dataset.agPrimaryClicked) continue;
-                btn.dataset.agPrimaryClicked = "true";
+                // Skip already-clicked (short cooldown prevents double-fire)
+                if (btn.dataset.agOmniClicked) continue;
+                btn.dataset.agOmniClicked = "true";
 
-                console.log(`⚡ V17 OMNI-TRIGGER: [${rawText.trim()}]`);
-                btn.style.border = "4px solid orange";
+                console.log(`⚡ V17.3 CLICK [${matchRule}]: "${rawText}"`);
+                btn.style.outline = "3px solid orange";
 
                 try { btn.focus(); } catch (e) { }
                 btn.click();
 
-                // Backup keyboard trigger
+                // Backup: keyboard Enter
                 setTimeout(() => {
                     const options = { bubbles: true, cancelable: true, view: window };
                     const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ...options };
@@ -251,17 +329,19 @@ function scanForPrimaryActions() {
                     btn.dispatchEvent(new KeyboardEvent('keyup', enter));
                 }, 50);
 
-                // Reset clicked flag after a delay so it can be pressed again later if a new prompt appears
-                setTimeout(() => { btn.dataset.agPrimaryClicked = ""; }, 2500);
+                // Reset after cooldown so new instances can be clicked
+                setTimeout(() => { btn.dataset.agOmniClicked = ""; }, 2500);
                 clicked++;
             }
         }
     }
+
+    if (doDebug) console.log(`--- End scan (clicked: ${clicked}) ---\n`);
     return clicked;
 }
 
 // ========================================================
-// 10. STUCK-SCROLL DETECTION — "Step Requires Input"
+// 8. STUCK-SCROLL DETECTION — "Step Requires Input"
 // ========================================================
 function checkForStuckState(doc) {
     const bodyText = doc.body ? doc.body.innerText : '';
@@ -274,29 +354,24 @@ function checkForStuckState(doc) {
 
         stuckDetected = true;
         lastStuckTime = now;
-        console.log("🔍 STUCK DETECTED: 'Step Requires Input' found");
+        console.log("🔍 STUCK DETECTED — scrolling to bottom then clicking action button");
 
-        const clickedBtn = scanForPrimaryActions();
-
-        if (clickedBtn === 0) {
-            console.log("⚠️ No action button immediately found — forcing scroll to bottom");
-            userScrolledUp = false;
+        userScrolledUp = false;
+        // Force scroll first
+        forceScrollAllContainers(doc);
+        // Then try to click after scroll settles
+        setTimeout(() => {
             forceScrollAllContainers(doc);
-            setTimeout(() => {
-                forceScrollAllContainers(doc);
-                scanForPrimaryActions();
-            }, 300);
-        } else {
-            console.log("✅ Button was found and clicked immediately. Resolving stick state.");
-            stuckDetected = false;
-        }
+            scanForPrimaryActions();
+        }, 400);
     } else if (!isStuck && stuckDetected) {
         stuckDetected = false;
+        console.log("✅ Stuck state resolved");
     }
 }
 
 // ========================================================
-// 11. MAIN HANDLER (mutation-driven)
+// 9. MAIN HANDLER (mutation-driven)
 // ========================================================
 function handleMutations(doc) {
     onMutationActivity();
@@ -304,26 +379,23 @@ function handleMutations(doc) {
 }
 
 // ========================================================
-// 12. SETUP — OBSERVERS + HEARTBEAT
+// 10. SETUP — OBSERVERS + HEARTBEAT
 // ========================================================
 
-// 12A. OBSERVE MAIN DOCUMENT
+// 10A. OBSERVE MAIN DOCUMENT
 console.log("✅ Attaching Observer to MAIN document...");
 setupScrollDetection(document);
 
 window.agObserver2 = new MutationObserver((mutations) => {
     let relevant = false;
     for (const m of mutations) {
-        if (m.addedNodes.length > 0 || m.type === 'characterData') {
-            relevant = true;
-            break;
-        }
+        if (m.addedNodes.length > 0 || m.type === 'characterData') { relevant = true; break; }
     }
     if (relevant) handleMutations(document);
 });
 window.agObserver2.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-// 12B. OBSERVE IFRAME
+// 10B. OBSERVE IFRAME
 const frame = document.querySelector('iframe[id*="antigravity"], iframe[src*="antigravity"]');
 if (frame) {
     const startIframeObserver = () => {
@@ -331,46 +403,39 @@ if (frame) {
             const doc = frame.contentDocument || frame.contentWindow.document;
             console.log("✅ Attaching Observer to IFRAME...");
             setupScrollDetection(doc);
-
             window.agObserver = new MutationObserver((mutations) => {
                 let relevant = false;
                 for (const m of mutations) {
-                    if (m.addedNodes.length > 0 || m.type === 'characterData') {
-                        relevant = true;
-                        break;
-                    }
+                    if (m.addedNodes.length > 0 || m.type === 'characterData') { relevant = true; break; }
                 }
                 if (relevant) handleMutations(doc);
             });
             window.agObserver.observe(doc.body, { childList: true, subtree: true, characterData: true });
-
-            // Heartbeat
             window.agStuckChecker = setInterval(() => { checkForStuckState(doc); }, HEARTBEAT_INTERVAL);
-        } catch (e) { }
+        } catch (e) { console.error("❌ Iframe error:", e); }
     };
     if (frame.contentDocument && frame.contentDocument.readyState === 'complete') startIframeObserver();
     else frame.addEventListener('load', startIframeObserver);
+} else {
+    console.log("⚠️ Iframe not found (will catch via main observer + heartbeat).");
 }
 
-// 12C. HEARTBEAT — main document
-window.agHeartbeat = setInterval(() => {
-    checkForStuckState(document);
-}, HEARTBEAT_INTERVAL);
+// 10C. HEARTBEAT — main document
+window.agHeartbeat = setInterval(() => { checkForStuckState(document); }, HEARTBEAT_INTERVAL);
 
-// 12D. OMNI-CLICKER DEDICATED SCANNER
-// This single scanner catches Always Allow, Accept All, AND Run/Proceed buttons!
-window.agPrimaryScanner = setInterval(() => {
-    scanForPrimaryActions();
-}, ACTION_BUTTON_SCAN_MS);
+// 10D. OMNI-CLICKER SCANNER (scroll-first, then click right-side buttons)
+window.agPrimaryScanner = setInterval(() => { scanForPrimaryActions(); }, ACTION_BUTTON_SCAN_MS);
 
 // ========================================================
-// 13. STARTUP SUMMARY
+// 11. STARTUP SUMMARY
 // ========================================================
-console.log("✅ V17.0 Active. Omni-Clicker + Stuck Recovery.");
-console.log("📋 Summary:");
-console.log("   • 🚨 V17: Omni-Clicker deployed (Bypasses all popup/exclusion zones)");
-console.log("   • 🚨 V17: Action Button scanner actively running every 1000ms");
-console.log("   • Clicks 'Always Allow', 'Accept all', 'Run Alt+⏎', 'Proceed', 'Accept' instantly");
-console.log("   • Heartbeat scanner catches 'Step Requires Input' stuck states");
-console.log("   • Force-scrolls ALL scrollable containers when heavily stuck fallback");
-console.log("   • Improved scrolling logic with mutation/characterData tracking");
+console.log("✅ V17.3 Active. User-Scroll Aware + Right-Button Only.");
+console.log("📋 Scroll Rules:");
+console.log("   • Auto-scroll ONLY when streaming or stuck (never fights user scroll)");
+console.log("   • User scrolls up → auto-scroll pauses, user is in control");
+console.log("   • User scrolls back to bottom → auto-scroll resumes");
+console.log("   • Streaming stops → scroll stays where user left it");
+console.log("📋 Button Actions:");
+console.log("   ✅ Clicks: Run, RunAlt+⏎, Allow*, Accept all, Proceed, Approve");
+console.log("   🚫 NEVER: Always run, Always allow, Reject, Deny, Cancel");
+console.log("📋 Debug log every ~8s — watch for streaming/stuck/userScrolledUp state");
