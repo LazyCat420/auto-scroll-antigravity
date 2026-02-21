@@ -1,5 +1,5 @@
-// ANTIGRAVITY AUTOMATOR V17.3 — SCROLL-FIRST + RIGHT-BUTTON ONLY + USER SCROLL RESPECT
-console.log("🚀 Antigravity Automator V17.3 (User-Scroll Aware) Active");
+// ANTIGRAVITY AUTOMATOR V17.4 — SCROLL-FIRST + RIGHT-BUTTON ONLY + USER SCROLL RESPECT + WAITING/WORKING DETECTION
+console.log("🚀 Antigravity Automator V17.4 (Waiting/Working Aware) Active");
 
 // 1. CLEANUP
 if (window.agAutomator) clearInterval(window.agAutomator);
@@ -18,6 +18,9 @@ let userScrolledUp = false;
 let stuckDetected = false;
 let lastStuckTime = 0;
 let debugScanCount = 0;
+let scrollUpInProgress = false;
+let lastScrollUpTime = 0;
+const SCROLL_UP_COOLDOWN_MS = 8000;
 const STREAMING_THRESHOLD = 3;
 const IDLE_DELAY = 2000;
 const HEARTBEAT_INTERVAL = 3000;
@@ -341,12 +344,99 @@ function scanForPrimaryActions() {
 }
 
 // ========================================================
-// 8. STUCK-SCROLL DETECTION — "Step Requires Input"
+// 8. SCROLL-UP BUTTON FINDER — for "Waiting"/"Working" state
+//    When Antigravity shows Waiting/Working, the action button
+//    is ABOVE the viewport. Scroll up incrementally to find it.
+// ========================================================
+function scrollUpToFindButton(doc) {
+    if (scrollUpInProgress) return;
+
+    const now = Date.now();
+    if (now - lastScrollUpTime < SCROLL_UP_COOLDOWN_MS) return;
+
+    scrollUpInProgress = true;
+    lastScrollUpTime = now;
+    console.log("🔼 WAITING/WORKING detected — scrolling UP to find missed action button");
+
+    // Find the main conversation scroll container
+    const convo = doc.getElementById('conversation');
+    const containers = findAllScrollableContainers(doc);
+    const scrollTarget = convo ? findScrollableParent(convo) : (containers.length > 0 ? containers[0] : null);
+
+    if (!scrollTarget) {
+        console.log("⚠️ No scrollable container found for upward search");
+        scrollUpInProgress = false;
+        return;
+    }
+
+    const originalScrollTop = scrollTarget.scrollTop;
+    let attempts = 0;
+    const maxAttempts = 15;
+    const scrollStep = 300; // px per step
+
+    const tryScrollUp = () => {
+        if (attempts >= maxAttempts) {
+            console.log("⚠️ Scroll-up search exhausted — scrolling back to bottom");
+            scrollTarget.scrollTop = scrollTarget.scrollHeight;
+            scrollUpInProgress = false;
+            return;
+        }
+
+        // Scroll up
+        scrollTarget.scrollTop = Math.max(0, scrollTarget.scrollTop - scrollStep);
+        attempts++;
+        console.log(`  🔼 Scroll-up attempt ${attempts}/${maxAttempts} (scrollTop: ${scrollTarget.scrollTop})`);
+
+        // Scan for buttons after scroll settles
+        setTimeout(() => {
+            const clicked = scanForPrimaryActions();
+            if (clicked > 0) {
+                console.log(`  ✅ Found and clicked ${clicked} button(s) after scrolling up!`);
+                // Scroll back to bottom after a delay to let the action process
+                setTimeout(() => {
+                    scrollTarget.scrollTop = scrollTarget.scrollHeight;
+                    scrollUpInProgress = false;
+                    console.log("  ⬇️ Scrolled back to bottom after clicking");
+                }, 800);
+            } else if (scrollTarget.scrollTop <= 0) {
+                // Hit the top, scroll back to bottom
+                console.log("⚠️ Reached top of container — scrolling back to bottom");
+                scrollTarget.scrollTop = scrollTarget.scrollHeight;
+                scrollUpInProgress = false;
+            } else {
+                // Keep scrolling up
+                tryScrollUp();
+            }
+        }, 250);
+    };
+
+    tryScrollUp();
+}
+
+// ========================================================
+// 9. STUCK-SCROLL DETECTION — "Step Requires Input" + "Waiting"/"Working"
 // ========================================================
 function checkForStuckState(doc) {
     const bodyText = doc.body ? doc.body.innerText : '';
     const stuckPattern = /\d+\s+steps?\s+requires?\s+input/i;
-    const isStuck = stuckPattern.test(bodyText);
+    const isStuckInput = stuckPattern.test(bodyText);
+
+    // NEW: Detect "Waiting" or "Working" status indicators
+    // These appear as standalone text elements in the chat status area
+    let hasWaitingStatus = false;
+    if (!isStuckInput) {
+        const candidates = doc.querySelectorAll('span, div, p, label');
+        for (const el of candidates) {
+            const t = (el.textContent || '').trim();
+            // Must be a leaf node with exactly "Waiting" or "Working" text
+            if ((t === 'Waiting' || t === 'Working') && el.children.length === 0) {
+                hasWaitingStatus = true;
+                break;
+            }
+        }
+    }
+
+    const isStuck = isStuckInput || hasWaitingStatus;
 
     if (isStuck && !stuckDetected) {
         const now = Date.now();
@@ -354,24 +444,31 @@ function checkForStuckState(doc) {
 
         stuckDetected = true;
         lastStuckTime = now;
-        console.log("🔍 STUCK DETECTED — scrolling to bottom then clicking action button");
 
-        userScrolledUp = false;
-        // Force scroll first
-        forceScrollAllContainers(doc);
-        // Then try to click after scroll settles
-        setTimeout(() => {
+        if (hasWaitingStatus) {
+            // Waiting/Working → button is ABOVE, scroll UP to find it
+            console.log("🔍 WAITING/WORKING STATUS DETECTED — searching upward for action button");
+            userScrolledUp = false;
+            scrollUpToFindButton(doc);
+        } else {
+            // "Requires input" → button is BELOW, scroll DOWN as usual
+            console.log("🔍 STUCK DETECTED — scrolling to bottom then clicking action button");
+            userScrolledUp = false;
             forceScrollAllContainers(doc);
-            scanForPrimaryActions();
-        }, 400);
+            setTimeout(() => {
+                forceScrollAllContainers(doc);
+                scanForPrimaryActions();
+            }, 400);
+        }
     } else if (!isStuck && stuckDetected) {
         stuckDetected = false;
-        console.log("✅ Stuck state resolved");
+        scrollUpInProgress = false;
+        console.log("✅ Stuck/Waiting state resolved");
     }
 }
 
 // ========================================================
-// 9. MAIN HANDLER (mutation-driven)
+// 10. MAIN HANDLER (mutation-driven)
 // ========================================================
 function handleMutations(doc) {
     onMutationActivity();
@@ -379,10 +476,10 @@ function handleMutations(doc) {
 }
 
 // ========================================================
-// 10. SETUP — OBSERVERS + HEARTBEAT
+// 11. SETUP — OBSERVERS + HEARTBEAT
 // ========================================================
 
-// 10A. OBSERVE MAIN DOCUMENT
+// 11A. OBSERVE MAIN DOCUMENT
 console.log("✅ Attaching Observer to MAIN document...");
 setupScrollDetection(document);
 
@@ -395,7 +492,7 @@ window.agObserver2 = new MutationObserver((mutations) => {
 });
 window.agObserver2.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-// 10B. OBSERVE IFRAME
+// 11B. OBSERVE IFRAME
 const frame = document.querySelector('iframe[id*="antigravity"], iframe[src*="antigravity"]');
 if (frame) {
     const startIframeObserver = () => {
@@ -420,22 +517,26 @@ if (frame) {
     console.log("⚠️ Iframe not found (will catch via main observer + heartbeat).");
 }
 
-// 10C. HEARTBEAT — main document
+// 11C. HEARTBEAT — main document
 window.agHeartbeat = setInterval(() => { checkForStuckState(document); }, HEARTBEAT_INTERVAL);
 
-// 10D. OMNI-CLICKER SCANNER (scroll-first, then click right-side buttons)
+// 11D. OMNI-CLICKER SCANNER (scroll-first, then click right-side buttons)
 window.agPrimaryScanner = setInterval(() => { scanForPrimaryActions(); }, ACTION_BUTTON_SCAN_MS);
 
 // ========================================================
-// 11. STARTUP SUMMARY
+// 12. STARTUP SUMMARY
 // ========================================================
-console.log("✅ V17.3 Active. User-Scroll Aware + Right-Button Only.");
+console.log("✅ V17.4 Active. User-Scroll Aware + Waiting/Working Detection.");
 console.log("📋 Scroll Rules:");
 console.log("   • Auto-scroll ONLY when streaming or stuck (never fights user scroll)");
 console.log("   • User scrolls up → auto-scroll pauses, user is in control");
 console.log("   • User scrolls back to bottom → auto-scroll resumes");
 console.log("   • Streaming stops → scroll stays where user left it");
+console.log("📋 NEW: Waiting/Working Detection:");
+console.log("   • Detects 'Waiting' or 'Working' status text in chat");
+console.log("   • Scrolls UP to find missed action buttons above viewport");
+console.log("   • Clicks the button, then scrolls back to bottom");
 console.log("📋 Button Actions:");
 console.log("   ✅ Clicks: Run, RunAlt+⏎, Allow*, Accept all, Proceed, Approve");
 console.log("   🚫 NEVER: Always run, Always allow, Reject, Deny, Cancel");
-console.log("📋 Debug log every ~8s — watch for streaming/stuck/userScrolledUp state");
+console.log("📋 Debug log every ~8s — watch for streaming/stuck/waiting state");
